@@ -7,7 +7,8 @@ library(Hmisc)
 
 getwd()
 
-df <- read_xlsx("72HFS_STX_Raw Data.xlsx") %>% 
+df <- read_xlsx("72HFS_STX_Raw Data_2022.xlsx") %>%
+  # read_xlsx("72HFS_STX_Raw Data.xlsx") %>% 
   clean_names() %>%
   filter(result=="PointsBased") %>% 
   left_join(
@@ -24,16 +25,45 @@ observation_check <- df %>%
   summarise(count = n()) %>% 
   pivot_wider(names_from = "feature", values_from = "count")
 
+df %>% filter(measure =="Performance") %>% 
+  ggplot(aes(x=points_scored,  y=grader_name)) + geom_boxplot() + facet_grid (measure~., scales = "free")
+
+df %>%  filter(measure =="Performance") %>% group_by(grader_name, measure, points_scored) %>% summarise(count = n()) %>% 
+  ggplot(aes(x=points_scored, y = count, fill=grader_name)) + geom_col(position = "dodge2") + facet_grid (measure~., scales = "free")
 
 df %>%  filter(measure =="Task") %>%
   ggplot(aes(x=feature, y=points_scored)) + 
   geom_boxplot()
 
-df %>% filter(measure =="Task") %>% group_by(feature) %>% summarise(n = n()) %>% 
-  ggplot(aes(x=reorder(feature, n, fun=mean), y=n)) + geom_col() + coord_flip()
+df %>% left_join(read_xlsx("Key_STX.xlsx", sheet = "Weightings") %>% select(description,weight)) %>% 
+  mutate_at(vars(weight), ~round(.x,3)) %>% 
+  filter(measure =="Task") %>%
+  group_by(feature, weight) %>% 
+  summarise(n = n()) %>% 
+  ggplot(aes(x=reorder(feature, n, fun=mean), y=n, label = weight)) + geom_col() + geom_text(color="blue", nudge_y = 1) + coord_flip()
 
 df %>% filter(measure =="Performance") %>% group_by(category) %>% summarise(n = n()) %>% 
   ggplot(aes(x=reorder(category, n, fun=mean), y=n)) + geom_col() + coord_flip()
+
+
+df %>% 
+  left_join(read_xlsx("Key_STX.xlsx", sheet = "Weightings") %>% select(description,weight)) %>% 
+  mutate_at(vars(weight), ~round(.x,2)) %>%
+  filter(measure =="Task") %>%
+  separate(participant, into = c("plt", "sqd"), sep="Sqd") %>% 
+  group_by(plt, feature, weight) %>% 
+  summarise(n = n()) %>%
+  mutate(color = if_else(n<3, "very limited", 
+                         if_else(n<6, "limited", "good"))) %>% 
+  ggplot(aes(x=feature, y=n, fill=color, label=weight)) +
+  geom_col() +
+  geom_text(color="blue") +
+  scale_fill_manual(values=c("very limited"="red", "limited"="skyblue", "good" = "lightgreen"))+
+  coord_flip() + facet_grid(.~plt) + ylab("# of observations") +
+  labs(title = "STX Number of Observations by Measure", subtitle="measure weightings in blue")
+ggsave("Observation_report.jpg", width = 12, height = 6, units = "in")
+
+
 
 #variability analysis
 
@@ -53,9 +83,9 @@ df_weighted_scores <- df %>%
   group_by(participant, measure, description) %>% 
   summarise(points_scored = median(points_scored, na.rm = TRUE)) %>%
   left_join(read_xlsx("Key_STX.xlsx", sheet="Weightings") %>%
-              select(description,weight3)
+              select(description,weight)
             )%>%
-  mutate(score_wt = points_scored*weight3) %>% 
+  mutate(score_wt = points_scored*weight) %>% 
   group_by(participant,  measure) %>% 
   summarise(point_total = sum(score_wt)/2) %>%
   rbind( df %>% 
@@ -67,6 +97,9 @@ df_weighted_scores <- df %>%
            summarise(point_total = mean(points_scored, na.rm= TRUE)/10 )
   ) 
 
+cor((df_weighted_scores %>% pivot_wider(names_from = "measure", values_from = "point_total"))$Task, (df_weighted_scores %>% pivot_wider(names_from = "measure", values_from = "point_total"))$Performance)
+
+
 df %>%  
   filter(measure=="Task") %>%
   group_by(participant, measure, description) %>% 
@@ -76,9 +109,9 @@ df %>%
   mutate_if(is.numeric, impute) %>% 
   gather(3:47, key="description", value="points_scored") %>%
   left_join(read_xlsx("Key_STX.xlsx", sheet="Weightings") %>%
-              select(description,weight3)
+              select(description,weight)
   )%>%
-  mutate(score_wt = points_scored*weight3) %>% 
+  mutate(score_wt = points_scored*weight) %>% 
   group_by(participant,  measure) %>%
   mutate(point_total = 2) %>% 
   rbind( df %>% 
@@ -89,12 +122,12 @@ df %>%
            ungroup() %>% 
            mutate_if(is.numeric, impute) %>% 
            gather(3:17, key="description", value="points_scored") %>% 
-           mutate(weight3 = 1/15) %>% 
-           mutate(score_wt = weight3*points_scored) %>% 
+           mutate(weight = 1/15) %>% 
+           mutate(score_wt = weight*points_scored) %>% 
            mutate(point_total = 10)
            
   ) %>% 
-  rename("raw_score"="points_scored", "weight"="weight3", "weighted_score"="score_wt", "measure_category"="measure") %>% 
+  rename("raw_score"="points_scored", "weight"="weight", "weighted_score"="score_wt", "measure_category"="measure") %>% 
   mutate_if(is.numeric, ~round(.x, 3)) %>% 
   mutate(event = "React_to_Contact_STX") %>% 
   mutate(notes = "none") %>% 
@@ -103,7 +136,9 @@ df %>%
 
 df_weighted_scores %>% 
   pivot_wider(names_from ="measure", values_from = "point_total") %>% 
-  write_csv("SquadResults_STX.csv")
+  mutate(STX_score = (Task+Performance)/2) %>% 
+  select(participant, STX_score) %>% 
+  write_csv("SquadResults_STX_2022.csv")
 
 pnorm()
 
@@ -115,13 +150,18 @@ df_weighted_scores_scaled <- df_weighted_scores %>%
   mutate(point_total=pnorm(point_total)*100)
 
 
+
 df_weighted_scores %>% 
   ggplot(aes(x=reorder(participant, point_total, fun=mean), y=point_total, color=measure)) +
   geom_point(size=3) +
   coord_flip() +
-  ylim(0,1.1) +
-  ylab("points (proportion of total)") +
-  xlab("")
+  ylim(0,1)+
+  ylab("score (proportion of total)") +
+  xlab("") +
+  ggtitle("Squad Results (unscaled)")
+ggsave("STX_weighted_unscaled_scores.jpg", width = 6, height = 5, units = "in")
+
+
 
 df_weighted_scores_scaled %>% 
   ggplot(aes(x=reorder(participant, point_total, fun=mean), y=point_total, color=measure)) +
@@ -130,30 +170,23 @@ df_weighted_scores_scaled %>%
   ylim(0,100) +
   geom_hline(yintercept = 50, linetype = "dashed", color="black") +
   ylab("percentile") +
-  xlab("")
+  xlab("") +
+  ggtitle("Squad Results (scaled)")
+
+ggsave("STX_weighted_scaled_scores.jpg", width = 6, height = 5, units = "in")
+
+
 
 #correlation of measures
-heatmap_plot <- df %>%  
-  filter(measure=="Task") %>%
-  group_by(participant, measure, description) %>% 
-  summarise(points_scored = median(points_scored, na.rm = TRUE)) %>%
-  left_join(read_xlsx("Key_STX.xlsx", sheet="Weightings") %>%
-              select(description,weight3)
-  )%>%
-  mutate(score_wt = points_scored*weight3) %>% 
-  group_by(participant,  measure) %>% 
-  summarise(point_total = sum(score_wt)/2) %>%
-  rbind( df %>% 
+heatmap_plot <- 
+    df %>% 
            filter(measure=="Performance") %>% 
-           group_by(participant, measure, category) %>% 
-           summarise(point_total = median(points_scored, na.rm = TRUE)) %>%
-           mutate(measure = category) %>% 
-           select(-category)
-         ) %>% 
-  pivot_wider(names_from = "measure", values_from = "point_total") %>% 
+            select(-feature, -description, -measure) %>% 
+  pivot_wider(names_from = "category", values_from = "points_scored") %>% 
   ungroup() %>% 
-  column_to_rownames("participant") %>% 
-  mutate_at(vars(Task:`Weapons Handling`), scale)  
+  select(-grader_name, -participant) %>% 
+  mutate_at(vars(Security:`Rehearsals`), impute) %>% 
+  mutate_at(vars(Security:`Rehearsals`), scale) 
   
 png("correlation_superheat.png", height =600, width = 1200)
 cor( heatmap_plot) %>% 
@@ -257,3 +290,52 @@ cor(df_discrim_Performance) %>%
   arrange(-overall_score) %>% 
   mutate(overall_score = round(overall_score, 2)) %>% 
   write.csv("Performance_cor.csv")
+
+#factor analysis  
+library(psych)
+df_fa  <- df %>% filter(!feature %in% c("7", "8", "12", "13", "17", "18", "29", "32", "37", "38", "42", "43")) %>% 
+  group_by(participant, grader_name, feature) %>% 
+  summarise(points_scored = mean(points_scored, na.rm = TRUE)) %>% 
+  arrange(feature) %>% pivot_wider(names_from ="feature", values_from = "points_scored") %>% as.data.frame() %>% select(-participant, -grader_name) %>% 
+  mutate_if(is.numeric, impute)
+
+fa_cor <- cor(df_fa, use = "pairwise.complete")
+scree(fa_cor)
+
+factors_data <- 
+  fa(r = fa_cor, nfactors = 4)
+
+total_scales <- 
+  paste("V",4, sep="")
+
+factors_data$loadings
+df_efa <- factors_data[["loadings"]] %>% 
+  as.matrix.data.frame() %>% 
+  as.data.frame()%>% 
+  cbind(
+    df %>% filter(!feature %in% c("7", "8", "12", "13", "17", "18", "29", "32", "37", "38", "42", "43")) %>% arrange(feature) %>% 
+      select(feature) %>% 
+      unique() %>% rename(Item = feature)) %>% 
+  gather(V1:V4, key="Scale", value="Loading") %>% 
+  mutate(Scale = gsub("V", "Scale_", Scale)) %>%
+  mutate(Scale = as.factor(Scale) ) %>% 
+  #right_join(df_question) %>% 
+  dplyr::group_by(Item) %>% 
+  mutate(rank = rank(-1*abs(Loading))) %>% 
+  filter(rank==1) %>%  
+  dplyr::group_by(Scale) %>% 
+  mutate(LoadRank = rank(-1*abs(Loading))) %>% 
+  filter(LoadRank<=15) %>% 
+  ungroup() %>% 
+  arrange(Scale, LoadRank) %>% 
+  dplyr::select(Item, Scale, LoadRank, Loading) %>% 
+  select(Scale, Item, Loading) %>% 
+  arrange(Scale, -Loading)
+
+
+library(psych)
+library(FactoMineR)
+library(factoextra)
+pca_output <- prcomp(df_fa)
+pca_output$rotation
+fviz_eig(pca_output, ncp=26 )
